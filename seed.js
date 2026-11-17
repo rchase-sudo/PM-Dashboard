@@ -164,9 +164,39 @@ function makeSeed() {
     }
   }
 
+
+  /* ---------- books: vendors, bills, payroll, opening balances ---------- */
+  const accounts = defaultAccounts();
+  const V_ = (name, contact, terms, defAcct) => ({ id: id('v'), name, contact, email: contact.toLowerCase().replace(/[^a-z]+/g, '.') + '@example.com', phone: '(603) 555-01' + String(10 + (n % 80)), terms, defAcct });
+  const vendors = [V_('Granite Geotechnical', 'Pat Moriarty', 30, 'a5200'), V_('Greenleaf Wetland Science', 'Lena Frost', 30, 'a5200'), V_('AeroTopo Drone Mapping', 'Dev Rao', 30, 'a5200'), V_('Blueprint Express', 'Counter Desk', 30, 'a5300'),
+    V_('Riverside Office Park', 'Property Mgmt', 15, 'a6000'), V_('CivilSoft Licensing', 'Billing Dept', 30, 'a6100'), V_('Summit Business Insurance', 'Agent Services', 30, 'a6200'), V_('Northline Office Supply', 'Accounts', 30, 'a6300')];
+  const vByName = Object.fromEntries(vendors.map(v => [v.name, v]));
+  const bills = []; let bn = 2200;
+  const mkBill = (v, date, lines, num) => { const paid = date < add(today, -33); const b = { id: id('b'), vendorId: v.id, num: num || (v.name.split(' ').map(w => w[0]).join('') + '-' + (++bn)), date, due: add(date, v.terms), status: paid ? 'Paid' : 'Open', paidDate: paid ? add(date, v.terms - 4) : '', lines }; bills.push(b); return b; };
+  for (const x of expenses) {
+    const v = vByName[x.vendor]; if (!v) continue;   // permit fees and mileage stay as direct (paid) expenses
+    const b = mkBill(v, x.date, [{ accountId: x.cat === 'Subconsultant' ? 'a5200' : 'a5300', desc: x.cat + ' — ' + proj0(x.projId), amount: x.amount, projId: x.projId, phaseId: x.phaseId }]);
+    x.billId = b.id;
+  }
+  function proj0(pid) { return (projects.find(p => p.id === pid) || {}).num || ''; }
+  const first = (k, d) => { const t = D(today); return iso(new Date(t.getFullYear(), t.getMonth() - k, d, 12)); };
+  for (let k = 4; k >= 0; k--) {
+    const rows = [[vendors[4], first(k, 1), 4800, 'a6000', 'Office rent'], [vendors[5], first(k, 5), 650, 'a6100', 'CAD & analysis licenses'], [vendors[6], first(k, 10), 900, 'a6200', 'Professional liability & GL'], [vendors[7], first(k, 15), Math.round(180 + rnd() * 140), 'a6300', 'Supplies']];
+    for (const [v, date, amt, a, desc] of rows) if (date <= today) mkBill(v, date, [{ accountId: a, desc, amount: amt, projId: '', phaseId: '' }]);
+  }
+  const journals = [{ id: id('j'), num: 'JE-001', date: add(today, -125), memo: 'Opening balances', lines: [{ accountId: 'a1000', debit: 230000, credit: 0 }, { accountId: 'a1500', debit: 35000, credit: 0 }, { accountId: 'a3010', debit: 0, credit: 265000 }] }];
+  const payruns = []; const pr = { wh: 22, er: 8.65 }, r2s = x => Math.round(x * 100) / 100;
+  for (let k = 7; k >= 0; k--) {
+    const end = add(mon, -1 - 14 * k), start = add(end, -13), payDate = add(end, 5);
+    const lines = employees.filter(e => e.active).map(e => { const hours = time.filter(t => t.empId === e.id && t.date >= start && t.date <= end).reduce((s, t) => s + t.hours, 0); const gross = r2s(hours * e.cost), wh = r2s(gross * pr.wh / 100), er = r2s(gross * pr.er / 100); return { empId: e.id, hours, rate: e.cost, gross, wh, er, net: r2s(gross - wh) }; }).filter(l => l.hours > 0);
+    payruns.push({ id: id('r'), num: 'PR-' + String(8 - k).padStart(3, '0'), start, end, payDate, status: payDate <= today ? 'Paid' : 'Draft', whPct: pr.wh, erPct: pr.er, lines });
+  }
+  const paidRuns = payruns.filter(r => r.status === 'Paid');
+  paidRuns.slice(0, -1).forEach((r, i) => { const date = add(r.payDate, 9); if (date <= today) journals.push({ id: id('j'), num: 'JE-' + String(i + 2).padStart(3, '0'), date, memo: 'Remit payroll taxes — ' + r.num, lines: [{ accountId: 'a2100', debit: r2s(r.lines.reduce((s, l) => s + l.wh + l.er, 0)), credit: 0 }, { accountId: 'a1000', debit: 0, credit: r2s(r.lines.reduce((s, l) => s + l.wh + l.er, 0)) }] }); });
+
   return {
     v: 1,
-    settings: { firm: 'Granite Ridge Civil Engineering', overhead: 150, markup: 10, terms: 30, nextInvoice: 1031 + invoices.length, theme: 'auto' },
-    employees, clients, projects, time, expenses, invoices, tasks, plan,
+    settings: { firm: 'Granite Ridge Civil Engineering', overhead: 150, markup: 10, terms: 30, nextInvoice: 1031 + invoices.length, theme: 'auto', payWithhold: 22, payEmployer: 8.65 },
+    employees, clients, projects, time, expenses, invoices, tasks, plan, accounts, vendors, bills, payruns, journals,
   };
 }

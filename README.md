@@ -1,31 +1,28 @@
-# Project Manager · Apollo Development
+# Project Manager — Apollo Development
 
-All-in-one project management and project accounting for a civil engineering office: projects, phases and budgets, staff and utilization, resource scheduling, timesheets, expenses, invoicing, A/R and reports.
+All-in-one project management, budgeting and lite accounting for civil engineering offices. Static web app (no build) + Supabase for login, multi-user sync and roles.
 
-Static web app — no build step, no server. Open `index.html` or host on GitHub Pages (the included workflow deploys on every push to `main`; set **Settings → Pages → Source** to **GitHub Actions** once).
+**Live:** https://rchase-sudo.github.io/PM-Dashboard/ (Settings → Pages → Source: GitHub Actions)
 
-## Modules
+## What's in it
+- **Operations:** dashboard, projects (phases, budgets, WIP, burn), timesheets, expenses, tasks, resource plan, clients, staff, reports.
+- **Billing:** invoices from unbilled time/expenses, A/R aging.
+- **Books (lite, Ajera-style):** chart of accounts + derived general ledger, payables (vendors, bills with project job-costing, payments), payroll runs (estimate, posts to ledger), financials (income statement, balance sheet, trial balance, CSV).
+- **Multi-user:** email/password accounts, firms with join codes, roles (admin, manager, accounting, staff) enforced by Postgres row-level security. Realtime sync between users.
+- **Demo mode:** works with no account, data stays in the browser.
 
-| Area | What it does |
-| --- | --- |
-| Dashboard | Backlog, unbilled WIP, A/R, utilization, profit; project health; a "needs attention" list |
-| Projects | Phases with fee and hour budgets, fixed-fee or hourly not-to-exceed, % complete, earned value, projected overrun |
-| Tasks | Drag-and-drop board with permit and hearing deadlines |
-| Schedule | Hours per person per week, over-capacity flags, planned hours vs. budget hours left |
-| Timesheets | Weekly grid by project/phase plus overhead codes, approval queue |
-| Billing | Invoices built from unbilled WIP, draft → sent → paid, A/R aging, printable invoice |
-| Expenses | Subconsultants and reimbursables with markup |
-| Reports | Profitability, utilization, WIP, A/R aging, backlog, time detail — CSV export |
+## Roles
+| Role | Access |
+|---|---|
+| admin | everything, team management |
+| manager | projects, clients, tasks, plan, billing, time/expenses |
+| accounting | books, invoices, expenses, time |
+| staff | own timesheet and tasks; read-only on projects |
 
-## How the numbers work
+## Setup
+1. Supabase project with the schema (firms, members, records + RLS + RPCs); put URL and publishable key in `config.js`.
+2. Auth → URL Configuration: set Site URL to the Pages URL. Decide whether Confirm email is on.
+3. GitHub Pages: Source = GitHub Actions.
 
-- **Spent** = labor at billing rates + billable expenses with markup
-- **Earned** = fee × % complete (fixed fee) or spent (hourly)
-- **WIP** = earned − invoiced
-- **Profit** = earned − (direct labor × (1 + overhead rate) + expenses at cost)
-
-## Data
-
-Data is stored in the browser (`localStorage`). Use **Settings → Export backup** to move it between computers. The first load shows fictional demo data; **Settings → Start with a blank office** clears it.
-
-Files: `index.html`, `style.css`, `app.js` (app), `seed.js` (demo data).
+## Limits
+Payroll is an estimate (no tax tables or filing). No bank reconciliation. Staff can see billing rates in project data.

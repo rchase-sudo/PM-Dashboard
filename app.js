@@ -31,12 +31,21 @@ const opt = (v, l, sel) => `<option value="${esc(v)}" ${String(sel ?? '') === St
 
 /* ---------- state ---------- */
 let db, memo = null;
+let persist = null, allowed = () => true, timeEmps = null, sessionFoot = null;   // hooks set by cloud.js
 const ui = { pf: 'Active', pq: '', tsEmp: '', tsWeek: monday(today()), tsRows: [], tsAdd: '', sched: monday(today()), rep: 'profit', repW: 4, tp: '', te: '' };
 function load() {
-  try { const s = localStorage.getItem(KEY); if (s) { db = JSON.parse(s); return; } } catch (e) { /* storage unavailable */ }
-  db = makeSeed();
+  try { const s = localStorage.getItem(KEY); if (s) { db = JSON.parse(s); ensure(true); return; } } catch (e) { /* storage unavailable */ }
+  db = makeSeed(); ensure(true);
 }
-function save() { memo = null; try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) { /* storage unavailable */ } }
+// fill in anything an older save (or a restricted role) doesn't have
+function ensure(seedAccounts) {
+  for (const k of ['employees', 'clients', 'projects', 'time', 'expenses', 'invoices', 'tasks', 'plan', 'accounts', 'vendors', 'bills', 'payruns', 'journals']) db[k] = db[k] || [];
+  if (db.settings.payWithhold == null) db.settings.payWithhold = 22;
+  if (db.settings.payEmployer == null) db.settings.payEmployer = 8.65;
+  if (seedAccounts && !db.accounts.length) db.accounts = defaultAccounts();
+}
+const themePref = () => (typeof cloud !== 'undefined' && cloud.on) ? (localStorage.getItem('apollo-pm-theme') || 'auto') : (db.settings.theme || 'auto');
+function save() { memo = null; if (typeof bookReset === 'function') bookReset(); if (persist) return persist(); try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) { /* storage unavailable */ } }
 const emp = id => db.employees.find(e => e.id === id);
 const proj = id => db.projects.find(p => p.id === id);
 const client = id => db.clients.find(c => c.id === id);
@@ -113,13 +122,14 @@ function alerts() {
   if (un.length) out.push({ t: 'info', h: '#/time', a: 'Timesheets waiting for approval', d: `${hr(sum(un, t => t.hours))} h from ${new Set(un.map(t => t.empId)).size} people` });
   const big = Object.values(S).filter(s => s.p.status !== 'Proposal' && s.wip > 5000).sort((a, b) => b.wip - a.wip)[0];
   if (big) out.push({ t: 'info', h: '#/billing', a: `${$m(sum(Object.values(S).filter(s => s.p.status !== 'Proposal'), s => Math.max(0, s.wip)))} ready to invoice`, d: `Largest: ${big.p.num} at ${$m(big.wip)}` });
+  if (typeof bookAlerts === 'function') out.push(...bookAlerts());
   return out;
 }
 
 /* ---------- views ---------- */
 const V = {};
 V.dashboard = () => {
-  const S = stats(), t0 = today(), act = db.projects.filter(p => p.status === 'Active');
+  const S = stats(), t0 = today(), act = db.projects.filter(p => p.status === 'Active'), bk = typeof bookKpi === 'function' ? bookKpi() : '';
   const live = Object.values(S).filter(s => s.p.status !== 'Proposal');
   const backlog = sum(act, p => Math.max(0, S[p.id].fee - S[p.id].earned)), prop = sum(db.projects.filter(p => p.status === 'Proposal'), p => S[p.id].fee);
   const wip = sum(live, s => Math.max(0, s.wip)), sent = db.invoices.filter(v => v.status === 'Sent'), ar = sum(sent, invTotal), odue = sum(sent.filter(v => v.due < t0), invTotal);
@@ -131,13 +141,14 @@ V.dashboard = () => {
     title: 'Dashboard', sub: `${esc(db.settings.firm)} · ${D(t0).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}`,
     actions: `<button class="btn" data-a="logTime">+ Log time</button><button class="btn primary" data-a="editProject">+ New project</button>`,
     html: `<div class="stack">
-    <div class="kpis">
+    <div class="kpis ${bk ? 'k7' : ''}">
       <div class="kpi"><div class="l">Active projects</div><div class="v">${act.length}</div><div class="s ${risk ? 'warn' : 'ok'}">${risk ? risk + ' need attention' : 'All on track'}</div></div>
       <div class="kpi"><div class="l">Backlog</div><div class="v">${$k(backlog)}</div><div class="s">${prop ? '+ ' + $k(prop) + ' proposed' : 'Fee left to earn'}</div></div>
       <div class="kpi"><div class="l">Unbilled WIP</div><div class="v">${$k(wip)}</div><div class="s">Earned, not invoiced</div></div>
       <div class="kpi"><div class="l">A/R outstanding</div><div class="v">${$k(ar)}</div><div class="s ${odue ? 'bad' : ''}">${odue ? $k(odue) + ' overdue' : 'Nothing overdue'}</div></div>
       <div class="kpi"><div class="l">Utilization · 4 wk</div><div class="v">${pc(fu)}</div><div class="s ${fu < ft - 0.05 ? 'warn' : 'ok'}">Target ${pc(ft)}</div></div>
       <div class="kpi"><div class="l">Profit to date</div><div class="v">${$k(profit)}</div><div class="s ${profit < 0 ? 'bad' : ''}">${pc(earned ? profit / earned : 0)} margin, active jobs</div></div>
+      ${bk}
     </div>
     <div class="grid g2">
       <div class="stack">
@@ -234,7 +245,9 @@ V.schedule = () => {
 
 const tsKey = t => (t.projId || '') + '|' + t.phaseId;
 V.time = () => {
-  if (!emp(ui.tsEmp)) ui.tsEmp = db.employees[0]?.id || '';
+  const tes = timeEmps ? timeEmps() : db.employees.filter(x => x.active);
+  if (!tes.some(x => x.id === ui.tsEmp)) ui.tsEmp = tes[0]?.id || '';
+  if (!tes.length) return { title: 'Timesheets', html: '<div class="panel"><div class="empty">Your login isn’t linked to an employee profile yet. Ask an admin to link it under Settings → Team &amp; access.</div></div>' };
   const e = emp(ui.tsEmp), w = ui.tsWeek, dates = DAYS.map((_, i) => addDays(w, i)), t0 = today();
   const ents = db.time.filter(t => t.empId === ui.tsEmp && t.date >= w && t.date <= dates[6]);
   const keys = [...new Set([...ents.map(tsKey), ...ui.tsRows])];
@@ -243,7 +256,7 @@ V.time = () => {
   db.time.filter(t => !t.approved && t.date < monday(t0)).forEach(t => { const k = t.empId + '|' + monday(t.date); pend[k] = (pend[k] || 0) + t.hours; });
   const unapp = ents.some(t => !t.approved);
   return { title: 'Timesheets', sub: 'Enter hours by day. Totals feed budgets, WIP and utilization as you type.',
-    actions: `<select class="inp sm" data-c="tsEmp">${db.employees.filter(x => x.active).map(x => opt(x.id, x.name, ui.tsEmp)).join('')}</select><button class="btn" data-a="tsWeek" data-v="-7">←</button><span class="mono" style="font-size:12.5px">Week of ${fdy(w)}</span><button class="btn" data-a="tsWeek" data-v="7">→</button><button class="btn primary" data-a="approve" data-e="${ui.tsEmp}" data-w="${w}" ${unapp ? '' : 'disabled'}>${ents.length && !unapp ? 'Approved ✓' : 'Approve week'}</button>`,
+    actions: `<select class="inp sm" data-c="tsEmp">${tes.map(x => opt(x.id, x.name, ui.tsEmp)).join('')}</select><button class="btn" data-a="tsWeek" data-v="-7">←</button><span class="mono" style="font-size:12.5px">Week of ${fdy(w)}</span><button class="btn" data-a="tsWeek" data-v="7">→</button><button class="btn primary" data-a="approve" data-e="${ui.tsEmp}" data-w="${w}" ${unapp ? '' : 'disabled'}>${ents.length && !unapp ? 'Approved ✓' : 'Approve week'}</button>`,
     html: `<div class="stack"><div class="panel"><div class="bd flush"><table class="ts"><thead><tr><th>Project / phase</th>${dates.map((d, i) => `<th class="c ${i > 4 ? 'wk' : ''}" style="${d === t0 ? 'color:var(--mint)' : ''}">${DAYS[i]}<br>${fd(d)}</th>`).join('')}<th class="r">Total</th></tr></thead><tbody>
     ${keys.map(k => `<tr><td>${label(k)}</td>${dates.map(d => { const h = sum(ents.filter(t => tsKey(t) === k && t.date === d), t => t.hours); return `<td class="c"><input inputmode="decimal" value="${h || ''}" data-c="ts" data-k="${esc(k)}" data-d="${d}" aria-label="${DAYS[dates.indexOf(d)]} hours"></td>`; }).join('')}<td class="r" data-rt="${esc(k)}">${hr(sum(ents.filter(t => tsKey(t) === k), t => t.hours))}</td></tr>`).join('') || `<tr><td colspan="9" class="empty">No time this week. Add a row below to start.</td></tr>`}
     </tbody><tfoot><tr><td>Daily total</td>${dates.map(d => `<td class="c num" data-dt="${d}">${hr(sum(ents.filter(t => t.date === d), t => t.hours))}</td>`).join('')}<td class="r" id="tsTot">${hr(sum(ents, t => t.hours))} / ${e?.cap || 40}</td></tr></tfoot></table></div>
@@ -341,36 +354,39 @@ V.reports = () => {
 };
 
 V.settings = () => {
-  const s = db.settings;
-  return { title: 'Settings', sub: 'Firm defaults and your data.',
-    html: `<div class="grid g2e"><div class="panel"><div class="hd"><span class="eyebrow">Firm</span></div><div class="bd" style="display:grid;gap:12px">
-      <div class="fld"><label>Firm name</label><input class="inp" value="${esc(s.firm)}" data-c="set" data-k="firm"></div>
-      <div class="fld"><label>Overhead rate (% of direct labor)</label><input class="inp" type="number" value="${s.overhead}" data-c="set" data-k="overhead"><span class="note">Used for project cost and profit. 150% means every $1 of salary carries $1.50 of overhead.</span></div>
-      <div class="fld"><label>Default expense markup (%)</label><input class="inp" type="number" value="${s.markup}" data-c="set" data-k="markup"></div>
-      <div class="fld"><label>Payment terms (days)</label><input class="inp" type="number" value="${s.terms}" data-c="set" data-k="terms"></div>
-      <div class="fld"><label>Appearance</label><select class="inp" data-c="set" data-k="theme">${[['auto', 'Match system'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) => opt(v, l, s.theme)).join('')}</select></div>
+  const st = db.settings, cl = typeof cloud !== 'undefined' && cloud.on, adm = typeof isAdmin === 'function' ? isAdmin() : true;
+  const look = `<div class="fld"><label>Appearance</label><select class="inp" data-c="set" data-k="theme">${[['auto', 'Match system'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) => opt(v, l, themePref())).join('')}</select></div>`;
+  if (!adm) return { title: 'Settings', sub: 'Your preferences.', html: `<div class="panel" style="max-width:520px"><div class="hd"><span class="eyebrow">Appearance</span></div><div class="bd">${look}</div></div>` };
+  const num = (l, k, note) => `<div class="fld"><label>${l}</label><input class="inp" type="number" step="any" value="${st[k] ?? ''}" data-c="set" data-k="${k}">${note ? `<span class="note">${note}</span>` : ''}</div>`;
+  return { title: 'Settings', sub: 'Firm defaults, access and your data.',
+    html: `<div class="stack"><div class="grid g2e"><div class="panel"><div class="hd"><span class="eyebrow">Firm</span></div><div class="bd" style="display:grid;gap:12px">
+      <div class="fld"><label>Firm name</label><input class="inp" value="${esc(st.firm)}" data-c="${cl ? 'firmName' : 'set'}" data-k="firm"></div>
+      ${num('Overhead rate (% of direct labor)', 'overhead', 'Used for project cost and profit. 150% means every $1 of salary carries $1.50 of overhead.')}
+      ${num('Default expense markup (%)', 'markup')}${num('Payment terms (days)', 'terms')}
+      ${num('Payroll: employee withholding (% of gross)', 'payWithhold', 'Estimate of federal + state + employee FICA withheld. Applies to new pay runs.')}${num('Payroll: employer tax (% of gross)', 'payEmployer', 'Employer FICA + unemployment estimate. Applies to new pay runs.')}${look}
     </div></div>
     <div class="panel"><div class="hd"><span class="eyebrow">Data</span></div><div class="bd" style="display:grid;gap:12px">
-      <div class="note">Everything is stored in this browser only. Export a backup to move it to another computer or share it with someone else.</div>
+      <div class="note">${cl ? 'Your firm’s data lives in the cloud and syncs live to everyone on the team. Export a backup any time.' : 'Everything is stored in this browser only. Export a backup to move it to another computer, or sign in to share it with a team.'}</div>
       <div class="row"><button class="btn" data-a="export">Export backup</button><label class="btn">Import backup<input type="file" accept="application/json,.json" hidden data-c="import"></label></div>
-      <div class="row"><button class="btn" data-a="resetDemo">Reload demo data</button><button class="btn danger" data-a="blank">Start with a blank office</button></div>
-      <div class="note">${db.projects.length} projects · ${db.employees.length} people · ${db.time.length.toLocaleString()} time entries · ${db.invoices.length} invoices</div>
-    </div></div></div>` };
+      ${cl ? '<div class="row"><button class="btn danger" data-a="eraseAll">Erase all firm data…</button></div>' : '<div class="row"><button class="btn" data-a="resetDemo">Reload demo data</button><button class="btn danger" data-a="blank">Start with a blank office</button></div>'}
+      <div class="note">${db.projects.length} projects · ${db.employees.length} people · ${db.time.length.toLocaleString()} time entries · ${db.invoices.length} invoices · ${db.bills.length} bills</div>
+    </div></div></div>${typeof teamPanel === 'function' ? teamPanel() : ''}</div>` };
 };
 
 /* ---------- shell ---------- */
 const NAV = [['', 'Overview'], ['dashboard', 'Dashboard'], ['projects', 'Projects'], ['tasks', 'Tasks'], ['', 'People'], ['schedule', 'Schedule'], ['time', 'Timesheets'], ['staff', 'Staff'], ['', 'Money'], ['billing', 'Billing'], ['expenses', 'Expenses'], ['clients', 'Clients'], ['reports', 'Reports'], ['', ''], ['settings', 'Settings']];
-function route() { const [, v = 'dashboard', id] = location.hash.split('/'); return { v: V[v] ? v : 'dashboard', id }; }
+function route() { const [, v = 'dashboard', id] = location.hash.split('/'); return { v: V[v] && allowed(v) ? v : 'dashboard', id }; }
 function render() {
   const { v, id } = route(), a = document.activeElement, fid = a && a.id, pos = a && a.selectionStart, t0 = today();
   const out = V[v](id), sec = v === 'project' ? 'projects' : v;
   const counts = { projects: [db.projects.filter(p => p.status === 'Active').length], tasks: [db.tasks.filter(k => k.status !== 'Done' && k.due < t0).length, 1], billing: [db.invoices.filter(x => x.status === 'Sent' && x.due < t0).length, 1], time: [new Set(db.time.filter(t => !t.approved && t.date < monday(t0)).map(t => t.empId + monday(t.date))).size, 1] };
-  $('#nav').innerHTML = `<div class="brand"><div class="mark"></div><div><h1>Project Manager</h1><div class="tag">Apollo Development</div></div></div>` +
-    NAV.map(([k, l]) => k ? `<a href="#/${k}" class="${sec === k ? 'on' : ''}">${l}${counts[k] && counts[k][0] ? `<span class="ct ${counts[k][1] ? 'hot' : ''}">${counts[k][0]}</span>` : ''}</a>` : `<div class="grp">${l}</div>`).join('') + `<div class="foot">${esc(db.settings.firm)}</div>`;
+  let nav = '', pend = null;
+  for (const [k, l] of NAV) { if (!k) { pend = l; continue; } if (!allowed(k)) continue; if (pend !== null) { nav += `<div class="grp">${pend}</div>`; pend = null; } nav += `<a href="#/${k}" class="${sec === k ? 'on' : ''}">${l}${counts[k] && counts[k][0] ? `<span class="ct ${counts[k][1] ? 'hot' : ''}">${counts[k][0]}</span>` : ''}</a>`; }
+  $('#nav').innerHTML = `<div class="brand"><div class="mark"></div><div><h1>Project Manager</h1><div class="tag">Apollo Development</div></div></div>` + nav + `<div class="foot">${sessionFoot ? sessionFoot() : esc(db.settings.firm)}</div>`;
   $('#top').innerHTML = `<div><h2>${out.title}</h2>${out.sub ? `<div class="sub">${out.sub}</div>` : ''}</div><div class="actions">${out.actions || ''}</div>`;
   $('#view').innerHTML = out.html;
   document.title = `${out.title.replace(/<[^>]+>/g, '')} · Project Manager · Apollo Development`;
-  const th = db.settings.theme; if (th === 'auto' || !th) document.documentElement.removeAttribute('data-theme'); else document.documentElement.dataset.theme = th;
+  const th = themePref(); if (th === 'auto' || !th) document.documentElement.removeAttribute('data-theme'); else document.documentElement.dataset.theme = th;
   if (fid) { const el = document.getElementById(fid); if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch (e) { /* not a text input */ } } }
 }
 const commit = msg => { save(); render(); if (msg) toast(msg); };
@@ -428,7 +444,7 @@ const A = {
         { k: 'type', label: 'Billing', type: 'select', opts: [['fixed', 'Fixed fee (bill by % complete)'], ['tm', 'Hourly, not to exceed']], half: 1 }, { k: 'town', label: 'Location', half: 1 },
         { k: 'start', label: 'Start', type: 'date', half: 1 }, { k: 'due', label: 'Due', type: 'date', half: 1 }, { k: 'notes', label: 'Notes', type: 'textarea' }],
       save: v => { if (p) Object.assign(p, v); else { const np = { ...v, id: 'p' + uid(), phases: [] }; db.projects.push(np); setTimeout(() => { location.hash = '#/project/' + np.id; }); } },
-      del: p && (() => { db.projects = db.projects.filter(x => x !== p); for (const k of ['time', 'expenses', 'invoices', 'tasks', 'plan']) db[k] = db[k].filter(x => x.projId !== p.id); location.hash = '#/projects'; }) });
+      del: p && (() => { db.projects = db.projects.filter(x => x !== p); for (const k of ['time', 'expenses', 'invoices', 'tasks', 'plan']) db[k] = db[k].filter(x => x.projId !== p.id); db.bills.forEach(b => b.lines.forEach(l => { if (l.projId === p.id) { l.projId = ''; l.phaseId = ''; } })); location.hash = '#/projects'; }) });
   },
   editPhase: d => {
     const p = proj(d.p), f = d.f ? p.phases.find(x => x.id === d.f) : null, fixed = p.type === 'fixed';
@@ -443,6 +459,7 @@ const A = {
     save: v => { if (v.hours <= 0) return false; db.time.push({ ...v, id: 't' + uid(), approved: false }); } }),
   editExpense: d => {
     const x = d.id ? db.expenses.find(e => e.id === d.id) : null, pid = d.p || projOpts()[0]?.[0] || '';
+    if (x?.billId) return A.editBill({ id: x.billId });
     form({ title: x ? 'Edit expense' : 'Add expense', val: x || { projId: pid, phaseId: proj(pid)?.phases[0]?.id, date: today(), cat: CATS[0], markup: db.settings.markup, billable: true, amount: 0 },
       fields: [{ k: 'vendor', label: 'Vendor / description', req: 1 }, { k: 'projId', label: 'Project', type: 'select', opts: projOpts(true), half: 1 }, { k: 'phaseId', label: 'Phase', type: 'select', opts: phaseOpts, half: 1 },
         { k: 'date', label: 'Date', type: 'date', half: 1 }, { k: 'cat', label: 'Category', type: 'select', opts: CATS.map(c => [c, c]), half: 1 }, { k: 'amount', label: 'Cost ($)', type: 'number', half: 1 }, { k: 'markup', label: 'Markup (%)', type: 'number', half: 1 }, { k: 'billable', label: 'Bill this to the client', type: 'check' }],
@@ -500,7 +517,7 @@ const A = {
       const upd = () => { $$('[data-li]', root).forEach(el => lines[el.dataset.li].amount = parseFloat(el.value) || 0); $('#itot', root).textContent = $m(sum(lines, l => l.amount)); };
       root.addEventListener('input', upd); upd();
       root.querySelector('form').addEventListener('submit', ev => { ev.preventDefault(); upd(); const date = $('#idate', root).value || today();
-        const v = { id: 'i' + uid(), num: String(db.settings.nextInvoice++), projId: p.id, date, due: addDays(date, +$('#iterms', root).value || 0), status: 'Draft', paidDate: '', lines: lines.filter(l => l.amount).map(({ phaseId, desc, amount }) => ({ phaseId, desc, amount })) };
+        const v = { id: 'i' + uid(), num: String(nextInvNum()), projId: p.id, date, due: addDays(date, +$('#iterms', root).value || 0), status: 'Draft', paidDate: '', lines: lines.filter(l => l.amount).map(({ phaseId, desc, amount }) => ({ phaseId, desc, amount })) };
         if (!v.lines.length) return; db.invoices.push(v); save(); render(); A.viewInvoice({ id: v.id }); toast('Draft invoice created'); });
     }, true);
   },
@@ -521,10 +538,12 @@ const A = {
   csv: () => { const [name, fn] = REPORTS[ui.rep], r = fn(); const q = c => '"' + String(c).replace(/"/g, '""') + '"';
     download(name.toLowerCase().replace(/\W+/g, '-') + '-' + today() + '.csv', [r.cols.map(c => q(c[0])).join(','), ...r.rows.map(row => row.map(q).join(','))].join('\r\n'), 'text/csv'); },
   export: () => download('project-manager-backup-' + today() + '.json', JSON.stringify(db, null, 1), 'application/json'),
-  resetDemo: () => { if (confirm('Replace everything with fresh demo data?')) { db = makeSeed(); commit('Demo data loaded'); } },
+  resetDemo: () => { if (confirm('Replace everything with fresh demo data?')) { db = makeSeed(); ensure(true); commit('Demo data loaded'); } },
   blank: () => { if (!confirm('Erase all data and start with an empty office? Export a backup first if you want to keep anything.')) return;
-    db = { v: 1, settings: { ...db.settings, nextInvoice: 1001 }, employees: [], clients: [], projects: [], time: [], expenses: [], invoices: [], tasks: [], plan: [] }; commit('Blank office ready — add your people and clients first'); },
+    db = { v: 1, settings: { ...db.settings, nextInvoice: 1001 }, employees: [], clients: [], projects: [], time: [], expenses: [], invoices: [], tasks: [], plan: [], accounts: [], vendors: [], bills: [], payruns: [], journals: [] }; ensure(true); commit('Blank office ready — add your people and clients first'); },
 };
+// never reuse an invoice number, even if two people bill at once
+const nextInvNum = () => { const n = Math.max(db.settings.nextInvoice || 1001, ...db.invoices.map(x => (parseInt(x.num, 10) || 0) + 1)); db.settings.nextInvoice = n + 1; return n; };
 const nextNum = () => { const yy = String(new Date().getFullYear()).slice(2), n = Math.max(0, ...db.projects.map(p => (p.num.startsWith(yy + '-') ? parseInt(p.num.slice(3), 10) || 0 : 0))); return yy + '-' + String(n + 1).padStart(3, '0'); };
 function download(name, text, type) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
 
@@ -535,7 +554,7 @@ const C = {
   tp: el => { ui.tp = el.value; render(); }, te: el => { ui.te = el.value; render(); },
   repW: el => { ui.repW = +el.value; render(); },
   pct: el => { const f = proj(el.dataset.p).phases.find(x => x.id === el.dataset.f); f.pct = Math.max(0, Math.min(100, parseFloat(el.value) || 0)); commit(); },
-  set: el => { const k = el.dataset.k; db.settings[k] = el.type === 'number' ? (parseFloat(el.value) || 0) : el.value; commit('Saved'); },
+  set: el => { const k = el.dataset.k; if (k === 'theme' && typeof cloud !== 'undefined' && cloud.on) { try { localStorage.setItem('apollo-pm-theme', el.value); } catch (e) { /* ignore */ } return render(); } db.settings[k] = el.type === 'number' ? (parseFloat(el.value) || 0) : el.value; commit('Saved'); },
   ts: el => { // timesheet cell: replace that person/row/day, then patch totals in place so tabbing keeps focus
     const [pid, f] = el.dataset.k.split('|'), d = el.dataset.d, h = Math.max(0, Math.min(24, parseFloat(el.value) || 0));
     db.time = db.time.filter(t => !(t.empId === ui.tsEmp && t.date === d && tsKey(t) === el.dataset.k));
@@ -546,7 +565,7 @@ const C = {
     $$('[data-dt]').forEach(c => c.textContent = hr(sum(ents.filter(t => t.date === c.dataset.dt), t => t.hours)));
     $('#tsTot').textContent = `${hr(sum(ents, t => t.hours))} / ${emp(ui.tsEmp)?.cap || 40}`;
   },
-  import: el => { const file = el.files[0]; if (!file) return; file.text().then(txt => { try { const j = JSON.parse(txt); if (!j.projects || !j.employees || !j.settings) throw 0; for (const k of ['clients', 'time', 'expenses', 'invoices', 'tasks', 'plan']) j[k] = j[k] || []; db = j; commit('Backup imported'); } catch (e) { toast('That file is not a Project Manager backup.'); } }); },
+  import: el => { const file = el.files[0]; if (!file) return; file.text().then(txt => { try { const j = JSON.parse(txt); if (!j.projects || !j.employees || !j.settings) throw 0; db = j; ensure(true); commit('Backup imported'); } catch (e) { toast('That file is not a Project Manager backup.'); } }); },
 };
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-a]'); if (!el) return;
@@ -563,4 +582,3 @@ document.addEventListener('dragleave', e => { const c = e.target.closest?.('[dat
 document.addEventListener('drop', e => { const c = e.target.closest?.('[data-drop]'); if (!c) return; e.preventDefault(); const k = db.tasks.find(t => t.id === e.dataTransfer.getData('text/plain')); if (k && k.status !== c.dataset.drop) { k.status = c.dataset.drop; commit(); } else c.classList.remove('over'); });
 window.addEventListener('hashchange', () => { closeModal(); render(); window.scrollTo(0, 0); });
 
-load(); render();

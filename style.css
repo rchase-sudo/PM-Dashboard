@@ -210,3 +210,23 @@ tfoot td { font-weight: 700; border-top: 1px solid var(--line); background: colo
   body.printing .dlg .df, body.printing .x { display: none; }
   :root { --bg: #fff; --surface: #fff; --text: #000; --soft: #333; --faint: #555; --line: #ccc; }
 }
+
+/* ---------- books + auth ---------- */
+.kpis.k7 { grid-template-columns: repeat(7, 1fr); }
+@media (max-width: 1100px) { .kpis.k7 { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 640px) { .kpis.k7 { grid-template-columns: repeat(2, 1fr); } }
+.stmt td.indent { padding-left: 28px; }
+.stmt .sec td { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); padding-top: 14px; background: transparent; }
+.stmt .tot td { font-weight: 700; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface-2) 50%, transparent); }
+.stmt tr.click:hover td { background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
+.bl { display: grid; grid-template-columns: 1.25fr 1.2fr 88px 1.1fr 1fr 24px; gap: 6px; margin-bottom: 6px; align-items: center; }
+@media (max-width: 700px) { .bl { grid-template-columns: 1fr 1fr; } }
+#auth { display: none; }
+body.authing #auth { display: flex; position: fixed; inset: 0; z-index: 40; align-items: center; justify-content: center; padding: 16px; overflow: auto;
+  background: radial-gradient(60% 50% at 50% 30%, color-mix(in srgb, var(--mint) 12%, transparent), transparent 70%), var(--bg); }
+body.authing .shell { visibility: hidden; }
+.authcard { width: 100%; max-width: 400px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 26px; }
+.authcard h2 { font-size: 20px; }
+.msg { min-height: 18px; font-size: 13px; color: var(--soft); } .msg.bad { color: var(--red); }
+.or { display: flex; align-items: center; gap: 10px; margin: 16px 0 12px; color: var(--faint); font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 11px; }
+.or::before, .or::after { content: ''; flex: 1; border-top: 1px solid var(--line); }
